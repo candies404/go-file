@@ -13,6 +13,7 @@ import (
 	"html/template"
 	"os"
 	"strconv"
+	"strings"
 )
 
 func loadTemplate() *template.Template {
@@ -54,18 +55,42 @@ func main() {
 	server := gin.Default()
 	server.SetHTMLTemplate(loadTemplate())
 
+	// 打印 SessionSecret 的前几个字符（不要打印整个 secret）
+	common.SysLog(fmt.Sprintf("SessionSecret (first 5 chars): %s", common.SessionSecret[:5]))
+
 	// Initialize session store
 	var store sessions.Store
 	if common.RedisEnabled {
 		opt := common.ParseRedisOption()
-		store, _ = redis.NewStore(opt.MinIdleConns, opt.Network, opt.Addr, opt.Password, []byte(common.SessionSecret))
+		var storeErr error
+		store, storeErr = redis.NewStore(opt.MinIdleConns, opt.Network, opt.Addr, opt.Password, []byte(common.SessionSecret))
+		if storeErr != nil {
+			common.FatalLog(fmt.Errorf("failed to create Redis session store: %v", storeErr))
+		}
+		common.SysLog("Redis session store initialized successfully")
 	} else {
 		store = cookie.NewStore([]byte(common.SessionSecret))
+		common.SysLog("Cookie session store initialized successfully")
 	}
+
+	// 检查是否使用 HTTPS
+	isSecure := strings.HasPrefix(*common.Host, "https://")
+	if isSecure {
+		common.SysLog("HTTPS detected, session Secure option set to true")
+	} else {
+		common.SysLog("HTTP detected, session Secure option set to false")
+	}
+
+	// 修改 session 选项
 	store.Options(sessions.Options{
 		HttpOnly: true,
+		MaxAge:   86400 * 7, // 7 days
+		Path:     "/",
+		Secure:   isSecure, // 如果使用 HTTPS，设置为 true
 	})
+
 	server.Use(sessions.Sessions("session", store))
+	common.SysLog("Session middleware applied")
 
 	router.SetRouter(server)
 	var realPort = os.Getenv("PORT")
